@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import re
-import os
+from matplotlib.patches import Patch
 
 # Load data
 file_path = '/home/dmytro/Downloads/microbiology_diploma/G-.xlsx'
@@ -13,19 +13,40 @@ df.columns = df.columns.str.strip()
 df = df[df['Rodzaj/gatunek (po czyszczeniu)'].notna()]
 df = df[~df['Rodzaj/gatunek (po czyszczeniu)'].astype(str).str.contains('NNNNN|no significant', case=False, na=False)]
 
-# Normalize medium names
+# Normalize medium names: keep only base medium ignoring colors/details
 def normalize_podloze(raw):
     if pd.isnull(raw):
         return 'nieznane'
-    s = str(raw).lower().replace('.', '').replace('-', ' ').replace(',', ' ')
-    if re.search(r'\bcled\b', s): return 'Cled'
-    if re.search(r'\bcetr\b', s): return 'Cetr'
-    if re.search(r'\bemb\b', s): return 'EMB'
-    if re.search(r'\bbec\b', s) or re.search(r'\bb e c\b', s): return 'BEC'
-    return 'inne'
+    s = str(raw).lower()
+    if 'cled' in s:
+        return 'Cled'
+    elif 'cetr' in s:
+        return 'Cetr'
+    elif 'emb' in s:
+        return 'EMB'
+    elif 'b.e.c' in s or 'bec' in s:
+        return 'BEC'
+    else:
+        return 'inne'
+
 df['Podloze'] = df['Podłoże z którego wyhodowano/morfologia kolonii'].apply(normalize_podloze)
 
-# Gram classification
+# Extract genus only (ignore species)
+def extract_genus(name):
+    if pd.isnull(name):
+        return ''
+    # Remove brackets, parentheses, prefixes like 'A ', and extra whitespace
+    name = re.sub(r'[\[\]\(\)]', '', str(name))
+    name = re.sub(r'^[Aa]\s+', '', name)
+    name = name.strip()
+    # If multiple taxa separated by '/', take the first
+    name = name.split('/')[0]
+    genus = name.split()[0] if len(name.split()) > 0 else ''
+    return genus
+
+df['Rodzaj'] = df['Rodzaj/gatunek (po czyszczeniu)'].apply(extract_genus)
+
+# Gram classification keywords
 gram_negative_keywords = [
     'Pseudomonas', 'Acinetobacter', 'Enterobacter', 'Klebsiella', 'Serratia',
     'Stenotrophomonas', 'Rahnella', 'Pantoea', 'Escherichia', 'Shigella',
@@ -34,7 +55,8 @@ gram_negative_keywords = [
     'Sphingomonas', 'Moraxella', 'Shewanella', 'Citrobacter', 'Morganella',
     'Proteus', 'Providencia', 'Yersinia', 'Vibrio', 'Aeromonas', 'Campylobacter',
     'Helicobacter', 'Bordetella', 'Brucella', 'Legionella', 'Francisella',
-    'Fusobacterium', 'Porphyromonas', 'Prevotella'
+    'Fusobacterium', 'Porphyromonas', 'Prevotella', 'Stutzerimonas', 'Kluyvera',
+    'Buttiauxella', 'Leclercia', 'Psychrobacter', 'Enterobacteriaceae', 'Moellerella'
 ]
 gram_positive_keywords = [
     'Staphylococcus', 'Streptococcus', 'Bacillus', 'Clostridium', 'Listeria',
@@ -45,97 +67,89 @@ gram_positive_keywords = [
     'Tsukamurella', 'Gordonia', 'Dermatophilus', 'Brevibacterium',
     'Cellulomonas', 'Curtobacterium', 'Exiguobacterium', 'Geobacillus',
     'Lysinibacillus', 'Planococcus', 'Sporosarcina', 'Rossellomorea',
-    'Priestia', 'Terribacillus', 'Trichococcus'
+    'Priestia', 'Terribacillus', 'Trichococcus', 'Mesobacillus', 'Microbacterium',
+    'Okibacterium'
 ]
-def classify_gram(species_name):
-    if pd.isnull(species_name): return 'Nieokreślony'
-    species_name_lower = str(species_name).lower()
-    if any(k.lower() in species_name_lower for k in gram_negative_keywords): return 'Gram-ujemna'
-    if any(k.lower() in species_name_lower for k in gram_positive_keywords): return 'Gram-dodatnia'
-    return 'Nieokreślony'
-df['Typ Grama'] = df['Rodzaj/gatunek (po czyszczeniu)'].apply(classify_gram)
 
-# Extract genus and species (first two words)
-def extract_genus_species(name):
-    if pd.isnull(name): return ''
-    name = re.sub(r'[\[\]\(\),]', '', str(name))
-    words = name.strip().split()
-    if len(words) >= 2: return f"{words[0]} {words[1]}"
-    elif len(words) == 1: return words[0]
-    else: return ''
-df['Rodzaj_gatunek'] = df['Rodzaj/gatunek (po czyszczeniu)'].apply(extract_genus_species)
+def classify_gram(genus):
+    if not genus or genus == '':
+        return 'Unidentified by 16S sequencing'
+    genus_lower = genus.lower()
+    if any(k.lower() == genus_lower for k in gram_negative_keywords):
+        return 'Gram-ujemna'
+    if any(k.lower() == genus_lower for k in gram_positive_keywords):
+        return 'Gram-dodatnia'
+    return 'Unidentified by 16S sequencing'
 
-# Colors
-gram_colors = {'Gram-ujemna': '#8ecae6', 'Gram-dodatnia': '#888888', 'Nieokreślony': '#e0e0e0'}
+df['Typ Grama'] = df['Rodzaj'].apply(classify_gram)
 
+# Color definitions for Gram types
+gram_colors = {
+    'Gram-ujemna': '#8ecae6',        # light blue
+    'Gram-dodatnia': '#888888',      # gray
+    'Unidentified by 16S sequencing': '#e0e0e0'  # light gray
+}
+
+# Plot nested donut chart: inner = medium, outer = genus colored by Gram
 def plot_nested_donut(data, cycle):
-    # Outer ring: bacteria
-    outer_labels = []
-    outer_sizes = []
-    outer_colors = []
+    # Aggregate counts by medium and genus
+    grouped = data.groupby(['Podloze', 'Rodzaj']).size().reset_index(name='count')
 
-    for podloze, subset in data.groupby('Podloze'):
-        species_counts = subset['Rodzaj_gatunek'].value_counts()
-        for species, count in species_counts.items():
-            outer_labels.append(f"{species}\n({podloze})")
-            outer_sizes.append(count)
-            gram_type = subset[subset['Rodzaj_gatunek'] == species]['Typ Grama'].iloc[0]
-            outer_colors.append(gram_colors.get(gram_type, '#cccccc'))
-
-    total = sum(outer_sizes)
-    outer_fracs = np.array(outer_sizes) / total
-
-    # Inner ring: media
+    # Inner ring data: medium counts
     podloza_counts = data['Podloze'].value_counts()
     podloza_names = podloza_counts.index.tolist()
     podloza_sizes = podloza_counts.values
     podloza_fracs = podloza_sizes / podloza_sizes.sum()
 
+    # Outer ring data: genus counts within each medium
+    outer_sizes = grouped['count'].values
+    # Label with genus + medium on outer ring
+    outer_labels = [f"{row['Rodzaj']}\n({row['Podloze']})" if row['Rodzaj'] else 'Unidentified' for _, row in grouped.iterrows()]
+    outer_colors = [gram_colors.get(classify_gram(row['Rodzaj']), '#cccccc') for _, row in grouped.iterrows()]
+
+    total = outer_sizes.sum()
+    if total == 0:
+        print(f"No data for cycle {cycle}")
+        return
+
+    outer_fracs = outer_sizes / total
+
     fig, ax = plt.subplots(figsize=(12, 12))
 
-    # Outer ring (bacteria)
-    wedges2, _ = ax.pie(
+    # Outer ring (genus) with labels and autopct
+    wedges2, texts2, autotexts2 = ax.pie(
         outer_fracs,
         radius=1.0,
-        labels=None,
-        labeldistance=1.13,
-        wedgeprops=dict(width=0.3, edgecolor='w', alpha=1.0),
+        labels=outer_labels,
+        labeldistance=1.1,
+        autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
+        pctdistance=0.85,
+        wedgeprops=dict(width=0.3, edgecolor='w'),
         startangle=90,
-        colors=outer_colors
+        colors=outer_colors,
+        textprops={'fontsize': 9, 'weight': 'bold'}
     )
 
-    # Inner ring (media) - gray
-    wedges1, _ = ax.pie(
+    # Inner ring (medium) with labels and percentages
+    wedges1, texts1, autotexts1 = ax.pie(
         podloza_fracs,
-        radius=1.0 - 0.3,
+        radius=0.7,
         labels=podloza_names,
         labeldistance=0.6,
-        wedgeprops=dict(width=0.4, edgecolor='w', alpha=1.0),
+        autopct=lambda pct: f'{pct:.1f}%',
+        pctdistance=0.4,
+        wedgeprops=dict(width=0.3, edgecolor='w'),
         startangle=90,
-        colors=['#cccccc'] * len(podloza_names)
+        textprops={'fontsize': 11, 'weight': 'bold'}
     )
 
-    # Add percent labels to outer ring
-    angle = 90
-    for i, (frac, label) in enumerate(zip(outer_fracs, outer_labels)):
-        theta = (angle - frac * 360 / 2)
-        angle -= frac * 360
-        x = np.cos(np.deg2rad(theta)) * 1.18
-        y = np.sin(np.deg2rad(theta)) * 1.18
-        percent = f"{frac*100:.1f}%"
-        if frac > 0.03:  # only for larger sectors
-            ax.text(x, y, f"{label}\n{percent}", ha='center', va='center', fontsize=10, color='black')
+    # Legend for Gram types
+    legend_patches = [Patch(color=c, label=l) for l, c in gram_colors.items()]
+    ax.legend(handles=legend_patches, title='Gram', loc='upper right', fontsize=12)
 
-    # Legend
-    legend_labels = [
-        plt.Line2D([0], [0], marker='o', color='w', label='Gram-negative', markerfacecolor=gram_colors['Gram-ujemna'], markersize=15),
-        plt.Line2D([0], [0], marker='o', color='w', label='Gram-positive', markerfacecolor=gram_colors['Gram-dodatnia'], markersize=15)
-    ]
-    ax.legend(handles=legend_labels, loc='upper left', bbox_to_anchor=(1, 1.05), fontsize=13)
-    ax.set(aspect="equal", title=f"Cycle {cycle}: bacteria (outer, color = Gram type) and media (inner, gray)")
+    plt.title(f'Wielowarstwowy wykres pierścieniowy - Cykl {cycle}', fontsize=16, weight='bold')
     plt.tight_layout()
     plt.show()
-
 
 # Plot for each cycle
 for cycle in sorted(df['Pobór'].unique()):
