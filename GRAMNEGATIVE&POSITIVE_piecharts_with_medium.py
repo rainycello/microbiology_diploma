@@ -13,7 +13,7 @@ df.columns = df.columns.str.strip()
 df = df[df['Rodzaj/gatunek (po czyszczeniu)'].notna()]
 df = df[~df['Rodzaj/gatunek (po czyszczeniu)'].astype(str).str.contains('NNNNN|no significant', case=False, na=False)]
 
-# Normalize medium names
+# Normalize medium names: keep only base medium ignoring colors/details
 def normalize_podloze(raw):
     if pd.isnull(raw):
         return 'nieznane'
@@ -31,20 +31,22 @@ def normalize_podloze(raw):
 
 df['Podloze'] = df['Podłoże z którego wyhodowano/morfologia kolonii'].apply(normalize_podloze)
 
-# Extract genus
+# Extract genus only (ignore species)
 def extract_genus(name):
     if pd.isnull(name):
         return ''
+    # Remove brackets, parentheses, prefixes like 'A ', and extra whitespace
     name = re.sub(r'[\[\]\(\)]', '', str(name))
     name = re.sub(r'^[Aa]\s+', '', name)
     name = name.strip()
+    # If multiple taxa separated by '/', take the first
     name = name.split('/')[0]
     genus = name.split()[0] if len(name.split()) > 0 else ''
     return genus
 
 df['Rodzaj'] = df['Rodzaj/gatunek (po czyszczeniu)'].apply(extract_genus)
 
-# Gram classification lists
+# Gram classification keywords
 gram_negative_keywords = [
     'Pseudomonas', 'Acinetobacter', 'Enterobacter', 'Klebsiella', 'Serratia',
     'Stenotrophomonas', 'Rahnella', 'Pantoea', 'Escherichia', 'Shigella',
@@ -69,7 +71,6 @@ gram_positive_keywords = [
     'Okibacterium'
 ]
 
-# Gram classification function
 def classify_gram(genus):
     if not genus or genus == '':
         return 'Unidentified by 16S sequencing'
@@ -82,37 +83,40 @@ def classify_gram(genus):
 
 df['Typ Grama'] = df['Rodzaj'].apply(classify_gram)
 
-# Color definitions
+# Color definitions for Gram types
 gram_colors = {
-    'Gram-ujemna': '#8ecae6',
-    'Gram-dodatnia': '#888888',
-    'Unidentified by 16S sequencing': '#e0e0e0'
+    'Gram-ujemna': '#8ecae6',        # light blue
+    'Gram-dodatnia': '#888888',      # gray
+    'Unidentified by 16S sequencing': '#e0e0e0'  # light gray
 }
 
-# Nested donut chart plotting
-def plot_nested_donut(data, title_text):
+# Plot nested donut chart: inner = medium, outer = genus colored by Gram
+def plot_nested_donut(data, cycle):
+    # Aggregate counts by medium and genus
     grouped = data.groupby(['Podloze', 'Rodzaj']).size().reset_index(name='count')
 
+    # Inner ring data: medium counts
     podloza_counts = data['Podloze'].value_counts()
     podloza_names = podloza_counts.index.tolist()
     podloza_sizes = podloza_counts.values
     podloza_fracs = podloza_sizes / podloza_sizes.sum()
 
+    # Outer ring data: genus counts within each medium
     outer_sizes = grouped['count'].values
-    outer_labels = [f"{row['Rodzaj']}\n({row['Podloze']})" if row['Rodzaj'] else 'Unidentified'
-                    for _, row in grouped.iterrows()]
-    outer_colors = [gram_colors.get(classify_gram(row['Rodzaj']), '#cccccc')
-                    for _, row in grouped.iterrows()]
+    # Label with genus + medium on outer ring
+    outer_labels = [f"{row['Rodzaj']}\n({row['Podloze']})" if row['Rodzaj'] else 'Unidentified' for _, row in grouped.iterrows()]
+    outer_colors = [gram_colors.get(classify_gram(row['Rodzaj']), '#cccccc') for _, row in grouped.iterrows()]
 
     total = outer_sizes.sum()
     if total == 0:
-        print(f"No data for {title_text}")
+        print(f"No data for cycle {cycle}")
         return
 
     outer_fracs = outer_sizes / total
 
     fig, ax = plt.subplots(figsize=(12, 12))
 
+    # Outer ring (genus) with labels and autopct
     wedges2, texts2, autotexts2 = ax.pie(
         outer_fracs,
         radius=1.0,
@@ -126,6 +130,7 @@ def plot_nested_donut(data, title_text):
         textprops={'fontsize': 9, 'weight': 'bold'}
     )
 
+    # Inner ring (medium) with labels and percentages
     wedges1, texts1, autotexts1 = ax.pie(
         podloza_fracs,
         radius=0.7,
@@ -138,17 +143,15 @@ def plot_nested_donut(data, title_text):
         textprops={'fontsize': 11, 'weight': 'bold'}
     )
 
+    # Legend for Gram types
     legend_patches = [Patch(color=c, label=l) for l, c in gram_colors.items()]
     ax.legend(handles=legend_patches, title='Gram', loc='upper right', fontsize=12)
 
-    plt.title(f'Wielowarstwowy wykres pierścieniowy – {title_text}', fontsize=16, weight='bold')
+    plt.title(f'Wielowarstwowy wykres pierścieniowy - Cykl {cycle}', fontsize=16, weight='bold')
     plt.tight_layout()
     plt.show()
 
-# Plot for each cycle with Miejsce_poboru in the title
+# Plot for each cycle
 for cycle in sorted(df['Pobór'].unique()):
     data_cycle = df[df['Pobór'] == cycle]
-    miejsca = data_cycle['Miejsce_poboru'].dropna().unique()
-    miejsce_text = ', '.join(miejsca) if len(miejsca) > 0 else 'brak danych'
-    title_text = f"Cykl {cycle} – {miejsce_text}"
-    plot_nested_donut(data_cycle, title_text)
+    plot_nested_donut(data_cycle, cycle)
