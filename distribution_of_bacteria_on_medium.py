@@ -42,7 +42,7 @@ grouped = df.groupby(['Podloze', 'Rodzaj']).size().reset_index(name='count')
 for medium in grouped['Podloze'].unique():
     data = grouped[grouped['Podloze'] == medium].copy()
     total = data['count'].sum()
-    data['percent'] = (data['count'] / total * 100).round(1)
+    data['percent'] = (data['count'] / total * 100).round(3)
     data['label'] = data.apply(lambda row: f"{row['Rodzaj']} ({row['percent']}%)", axis=1)
 
     # Create figure using Rodzaj as name (to keep clean legend)
@@ -60,6 +60,16 @@ for medium in grouped['Podloze'].unique():
         textposition='inside',
         hovertemplate='%{label} (%{percent})<extra></extra>',
         textinfo='text'  # Only show custom text, not default label
+    )
+
+    # Display with 2 decimal places in both the text and hovertemplate
+    data['percent_str'] = data['percent'].map(lambda x: f"{x:.2f}%")
+
+    fig.update_traces(
+        text=data['percent_str'],
+        textposition='inside',
+        hovertemplate='%{label} (%{percent:.2f}%)<extra></extra>',
+        textinfo='text'
     )
 
     # Keep the legend readable (Rodzaj only)
