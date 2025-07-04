@@ -1,80 +1,87 @@
 import pandas as pd
-import os
+import numpy as np
 import re
 import plotly.express as px
+import os
 
-# Load data
+# Wczytaj plik Excela
 script_dir = os.path.dirname(os.path.abspath(__file__))
 file_path = os.path.join(script_dir, 'Wyniki_powietrze-3.xlsx')
-df = pd.read_excel(file_path, sheet_name='Arkusz3')
-df.columns = df.columns.str.strip()
+df = pd.read_excel(file_path, sheet_name="Powietrze zewnętrzne-dane")
 
-# Filter
-df = df[df['Ogólna Liczba drobnoustrojów/m3 -sedymentacja'].notna()]
+# Wybierz potrzebne kolumny
+df_clean = df[[
+    "lokalizacja",
+    "Ogólna Liczba drobnoustrojów/m3 -sedymentacja",
+    "Ogólna liczba drobnoustrojów/m3-płuczka"
+]].copy()
 
-# Normalize medium names
-def normalize_podloze(raw):
-    if pd.isnull(raw): return 'nieznane'
-    s = str(raw).lower()
-    if 'cled' in s: return 'Cled'
-    elif 'cetr' in s: return 'Cetr'
-    elif 'emb' in s: return 'EMB'
-    elif 'b.e.c' in s or 'bec' in s: return 'BEC'
-    return 'inne'
+# Funkcja do parsowania wartości zapisanych jako notacja naukowa (np. 2,4×10^2)
+def parse_scientific_notation(val):
+    if pd.isna(val): return np.nan
+    val = str(val).strip().replace(',', '.').replace('×', 'x').replace('^', '**')
+    match = re.match(r'([\d.]+)\s*[xX]\s*10\s*\**\s*(\d+)', val)
+    if match:
+        base = float(match.group(1))
+        exponent = int(match.group(2))
+        return base * (10 ** exponent)
+    try:
+        return float(val)
+    except:
+        return np.nan
 
-df['Podloze'] = df['Podłoże z którego wyhodowano/morfologia kolonii'].apply(normalize_podloze)
+# Przekształć dane
+df_clean["sedymentacja"] = df_clean["Ogólna Liczba drobnoustrojów/m3 -sedymentacja"].apply(parse_scientific_notation)
+df_clean["pluczka"] = df_clean["Ogólna liczba drobnoustrojów/m3-płuczka"].apply(parse_scientific_notation)
 
-# Extract genus
-def extract_genus(name):
-    if pd.isnull(name): return ''
-    name = re.sub(r'[\[\]\(\)]', '', str(name))
-    name = re.sub(r'^[Aa]\s+', '', name)
-    name = name.strip().split('/')[0]
-    return name.split()[0] if name else ''
+# Oblicz średnie dla każdej lokalizacji
+avg_bacteria = df_clean.groupby("lokalizacja")[["sedymentacja", "pluczka"]].mean().reset_index()
 
-df['Rodzaj'] = df['Rodzaj/gatunek (po czyszczeniu)'].apply(extract_genus)
+# Skaluje wartości do postaci a × 10²
+def scale_to_e2(val):
+    if pd.isna(val): return np.nan
+    scaled = val / 100
+    return scaled
 
-# Group by medium and genus
-grouped = df.groupby(['Podloze', 'Rodzaj']).size().reset_index(name='count')
+# Przeskaluj dane do ×10² i zapisz etykiety tekstowe
+avg_bacteria["sedymentacja_scaled"] = avg_bacteria["sedymentacja"].apply(scale_to_e2)
+avg_bacteria["pluczka_scaled"] = avg_bacteria["pluczka"].apply(scale_to_e2)
 
-# Generate donut chart for each medium
-for medium in grouped['Podloze'].unique():
-    data = grouped[grouped['Podloze'] == medium].copy()
-    total = data['count'].sum()
-    data['percent'] = (data['count'] / total * 100).round(3)
-    data['label'] = data.apply(lambda row: f"{row['Rodzaj']} ({row['percent']}%)", axis=1)
+# Przekształć do długiego formatu
+df_melted = avg_bacteria.melt(
+    id_vars='lokalizacja',
+    value_vars=['sedymentacja_scaled', 'pluczka_scaled'],
+    var_name='Method',
+    value_name='Wartosc_scaled'
+)
 
-    # Create figure using Rodzaj as name (to keep clean legend)
-    fig = px.pie(
-        data,
-        names='Rodzaj',
-        values='count',
-        title=f"Bacteria on medium: {medium}",
-        hole=0.3
-    )
+# Przypisz etykiety tekstowe z ×10²
+df_melted["label"] = df_melted["Wartosc_scaled"].apply(lambda x: f"{x:.2f} × 10²" if pd.notna(x) else "")
 
-    # Update text inside the donut only to show percent in parentheses
-    fig.update_traces(
-        text=data['percent'].astype(str) + '%',
-        textposition='inside',
-        hovertemplate='%{label} (%{percent})<extra></extra>',
-        textinfo='text'  # Only show custom text, not default label
-    )
+# Nazwy metod ładniejsze
+df_melted["Method"] = df_melted["Method"].map({
+    "sedymentacja_scaled": "Sedimentation",
+    "pluczka_scaled": "Scrubber"
+})
 
-    # Display with 2 decimal places in both the text and hovertemplate
-    data['percent_str'] = data['percent'].map(lambda x: f"{x:.2f}%")
+# Wykres słupkowy z etykietami
+fig = px.bar(
+    df_melted,
+    x="lokalizacja",
+    y="Wartosc_scaled",
+    color="Method",
+    barmode="group",
+    text="label",
+    title="Average amount of bacteria per localization (scaled to ×10²)"
+)
 
-    fig.update_traces(
-        text=data['percent_str'],
-        textposition='inside',
-        hovertemplate='%{label} (%{percent:.2f}%)<extra></extra>',
-        textinfo='text'
-    )
+fig.update_layout(
+    yaxis_title="Bacteria amount (×10² / m³)",
+    xaxis_title="Localization",
+    title_x=0.5,
+    bargap=0.3
+)
 
-    # Keep the legend readable (Rodzaj only)
-    fig.update_layout(
-        margin=dict(t=50, b=0, l=0, r=0),
-        showlegend=True
-    )
+fig.update_traces(textposition='outside')
 
-    fig.show()
+fig.show()
