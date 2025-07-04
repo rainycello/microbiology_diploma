@@ -1,80 +1,69 @@
 import pandas as pd
-import os
-import re
-import plotly.express as px
+import matplotlib.pyplot as plt
+import numpy as np
 
-# Load data
-script_dir = os.path.dirname(os.path.abspath(__file__))
-file_path = os.path.join(script_dir, 'Wyniki_powietrze-3.xlsx')
-df = pd.read_excel(file_path, sheet_name='Arkusz3')
-df.columns = df.columns.str.strip()
+# === Wczytaj dane ===
+file_path = 'Wyniki_powietrze-3.xlsx'
+sheet_name = 'Powietrze zewnątrz-G(-)'
+df = pd.read_excel(file_path, sheet_name=sheet_name)
 
-# Filter
-df = df[df['Ogólna Liczba drobnoustrojów/m3 -sedymentacja'].notna()]
+# === Lista bakterii coli ===
+coli_keywords = ['Pantoea', 'Enterobacter', 'Klebsiella', 'Citrobacter', 'Erwinia',
+                 'Moellerella', 'Leclercia', 'Kluyvera', 'Buttiauxella']
 
-# Normalize medium names
-def normalize_podloze(raw):
-    if pd.isnull(raw): return 'nieznane'
-    s = str(raw).lower()
-    if 'cled' in s: return 'Cled'
-    elif 'cetr' in s: return 'Cetr'
-    elif 'emb' in s: return 'EMB'
-    elif 'b.e.c' in s or 'bec' in s: return 'BEC'
-    return 'inne'
+# === Filtruj tylko bakterie coli ===
+df_coli = df[df['Rodzaj/gatunek'].astype(str).str.contains('|'.join(coli_keywords), case=False, na=False)]
 
-df['Podloze'] = df['Podłoże z którego wyhodowano/morfologia kolonii'].apply(normalize_podloze)
+# === Przypisz uproszczone metody ===
+def detect_method(text):
+    text = str(text).lower()
+    if 'hodowla' in text:
+        return 'Hodowla'
+    elif 'płuczka' in text:
+        return 'Płuczka'
+    elif 'sedymentacja' in text:
+        return 'Sedymentacja'
+    else:
+        return 'Inna'
 
-# Extract genus
-def extract_genus(name):
-    if pd.isnull(name): return ''
-    name = re.sub(r'[\[\]\(\)]', '', str(name))
-    name = re.sub(r'^[Aa]\s+', '', name)
-    name = name.strip().split('/')[0]
-    return name.split()[0] if name else ''
+df_coli['Metoda'] = df_coli['Metoda poboru'].apply(detect_method)
 
-df['Rodzaj'] = df['Rodzaj/gatunek (po czyszczeniu)'].apply(extract_genus)
+# === Przygotuj podsumowanie ===
+metody_lista = ['Sedymentacja', 'Płuczka', 'Hodowla']
+lokalizacje = sorted(df['Miejsce poboru'].dropna().unique())
 
-# Group by medium and genus
-grouped = df.groupby(['Podloze', 'Rodzaj']).size().reset_index(name='count')
+kombinacje = pd.MultiIndex.from_product([lokalizacje, metody_lista], names=['Miejsce poboru', 'Metoda'])
+summary = df_coli.groupby(['Miejsce poboru', 'Metoda']).agg(
+    Liczba_prób=('Rodzaj/gatunek', 'count'),
+    Różnorodność=('Rodzaj/gatunek', pd.Series.nunique)
+).reindex(kombinacje, fill_value=0).reset_index()
 
-# Generate donut chart for each medium
-for medium in grouped['Podloze'].unique():
-    data = grouped[grouped['Podloze'] == medium].copy()
-    total = data['count'].sum()
-    data['percent'] = (data['count'] / total * 100).round(3)
-    data['label'] = data.apply(lambda row: f"{row['Rodzaj']} ({row['percent']}%)", axis=1)
+# === Kolory metod ===
+kolory_metod = {
+    'Sedymentacja': 'steelblue',
+    'Płuczka': 'forestgreen',
+    'Hodowla': 'gold'
+}
 
-    # Create figure using Rodzaj as name (to keep clean legend)
-    fig = px.pie(
-        data,
-        names='Rodzaj',
-        values='count',
-        title=f"Bacteria on medium: {medium}",
-        hole=0.3
-    )
+# === Funkcja rysująca ===
+def rysuj_wykres_pogrupowany(df, wartosc, tytul, ylabel):
+    x = np.arange(len(lokalizacje))  # pozycje bazowe
+    width = 0.25  # szerokość słupka
 
-    # Update text inside the donut only to show percent in parentheses
-    fig.update_traces(
-        text=data['percent'].astype(str) + '%',
-        textposition='inside',
-        hovertemplate='%{label} (%{percent})<extra></extra>',
-        textinfo='text'  # Only show custom text, not default label
-    )
+    fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Display with 2 decimal places in both the text and hovertemplate
-    data['percent_str'] = data['percent'].map(lambda x: f"{x:.2f}%")
+    for i, metoda in enumerate(metody_lista):
+        dane = df[df['Metoda'] == metoda][wartosc].values
+        ax.bar(x + i * width, dane, width, label=metoda, color=kolory_metod[metoda])
 
-    fig.update_traces(
-        text=data['percent_str'],
-        textposition='inside',
-        hovertemplate='%{label} (%{percent:.2f}%)<extra></extra>',
-        textinfo='text'
-    )
+    ax.set_xticks(x + width)
+    ax.set_xticklabels(lokalizacje, rotation=45)
+    ax.set_ylabel(ylabel)
+    ax.set_title(tytul)
+    ax.legend(title='Metoda')
+    plt.tight_layout()
+    plt.show()
 
-    # Keep the legend readable (Rodzaj only)
-    fig.update_layout(
-        margin=dict(t=50, b=0, l=0, r=0),
-        showlegend=True
-    )
-
-    fig.show()
+# === Rysuj wykresy ===
+rysuj_wykres_pogrupowany(summary, 'Liczba_prób', 'Liczba prób bakterii coli wg lokalizacji i metody', 'Liczba prób')
+rysuj_wykres_pogrupowany(summary, 'Różnorodność', 'Różnorodność bakterii coli wg lokalizacji i metody', 'Liczba unikalnych rodzajów/gatunków')
