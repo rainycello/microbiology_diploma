@@ -1,38 +1,99 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 
-# === CONFIGURATION ===
-file_path = 'Wyniki_powietrze-3.xlsx'  # Replace with your file name
-sheet_name = 'Powietrze zewnątrz-G(+)'  # Target sheet
-start_row = 336  # Skip 336 rows to start from row 337
+# === Load the data ===
+file_path = 'Wyniki_powietrze-3.xlsx'
+sheet_name = 'Powietrze zewnątrz-G(+)'
+df = pd.read_excel(file_path, sheet_name=sheet_name)
+df.columns = df.columns.str.strip()
 
-# === LOAD DATA ===
-df = pd.read_excel(file_path, sheet_name=sheet_name, skiprows=start_row, engine='openpyxl')
+# === Define specific groups ===
+exact_species = {
+    'anthracis': 'B. anthracis',
+    'cereus': 'B. cereus',
+    'mycoides': 'B. mycoides',
+    'thuringiensis': 'B. thuringiensis'
+}
 
-# Convert rows to single strings to search across all columns
-df_str = df.astype(str).apply(lambda row: ' '.join(row.values), axis=1)
+cereus_group_other = [
+    'wiedmannii', 'toyonensis', 'bombysepticus', 'weihenstephanensis',
+    'cytotoxicus', 'psuedoanthracis', 'bingmayongensis', 'clarus'
+]
 
-# === SEARCH TERMS ===
-mask_enterococcus = df_str.str.contains(r'enterococcus', case=False)
-mask_nuc_meca = df_str.str.contains(r'\bnuc\b|\bmecA\b', case=False)
+# === Classification function ===
+def classify_target(row):
+    species = str(row.get('Rodzaj/gatunek', '')).lower()
+    genes = f"{row.get('mecA', '')} {row.get('nuc', '')}".lower()
 
-# === FILTERED DATA ===
-df_enterococcus = df[mask_enterococcus]
-df_nuc_meca = df[mask_nuc_meca]
+    # Check for gene presence
+    if 'meca' in genes:
+        return 'mecA'
+    if 'nuc' in genes:
+        return 'nuc'
 
-# === COUNT RESULTS ===
-enterococcus_count = df_enterococcus.shape[0]
-nuc_meca_count = df_nuc_meca.shape[0]
+    # Exact matches for main Bacillus
+    for key, label in exact_species.items():
+        if key in species:
+            return label
 
-# === EXPORT MATCHED ROWS ===
-df_enterococcus.to_excel('enterococcus_results.xlsx', index=False)
-df_nuc_meca.to_excel('nuc_meca_results.xlsx', index=False)
+    # Group Bacillus cereus complex (rest)
+    for keyword in cereus_group_other:
+        if keyword in species:
+            return 'B. cereus group (other)'
 
-# === PLOT RESULTS ===
-plt.figure(figsize=(6, 4))
-plt.bar(['Enterococcus', 'nuc/mecA'], [enterococcus_count, nuc_meca_count], color=['blue', 'green'])
-plt.title('Occurrences in Dataset')
-plt.ylabel('Number of Matches')
+    # Enterococcus
+    if 'enterococcus' in species:
+        return 'Enterococcus'
+
+    return None
+
+# === Apply classification ===
+df['TargetClass'] = df.apply(classify_target, axis=1)
+df = df[df['TargetClass'].notna()]  # Keep only matching rows
+
+# === Rename for clarity ===
+df.rename(columns={
+    'Miejsce poboru': 'Location',
+    'Pobór': 'Cycle',
+    'Metoda identyfikacji': 'ID_method'
+}, inplace=True)
+
+# === Group and count ===
+summary = df.groupby(['Location', 'Cycle', 'ID_method', 'TargetClass']).size().reset_index(name='Count')
+
+# === Pivot for heatmaps ===
+pivot_table = summary.pivot_table(index=['Location', 'Cycle', 'ID_method'],
+                                   columns='TargetClass', values='Count', fill_value=0).reset_index()
+
+# === Melt for bubble plot ===
+melted = summary.copy()
+total_counts = melted.groupby(['Location', 'Cycle', 'ID_method'])['Count'].sum().reset_index(name='Total')
+merged = pd.merge(melted, total_counts, on=['Location', 'Cycle', 'ID_method'])
+merged['Fraction'] = merged['Count'] / merged['Total']
+
+# === Bubble Plot ===
+sns.set(style='whitegrid')
+g = sns.FacetGrid(merged, col='TargetClass', col_wrap=3, height=5, sharex=False, sharey=False)
+g.map_dataframe(sns.scatterplot,
+                x='Cycle', y='Location',
+                size='Count', hue='ID_method',
+                sizes=(50, 500), alpha=0.8)
+g.add_legend()
+g.fig.suptitle('Distribution of Gram-positive Targets by Type, Location, and Cycle', y=1.02)
 plt.tight_layout()
-plt.savefig('match_summary_plot.png')
 plt.show()
+
+# === Heatmaps ===
+target_classes = merged['TargetClass'].unique()
+
+for target in target_classes:
+    sub = summary[summary['TargetClass'] == target]
+    heat = sub.pivot_table(index='Location', columns='Cycle', values='Count', fill_value=0)
+    plt.figure(figsize=(10, 6))
+    sns.heatmap(heat, annot=True, fmt='d', cmap='YlOrBr')
+    plt.title(f'Heatmap of {target} Count by Location and Cycle')
+    plt.ylabel('Location')
+    plt.xlabel('Cycle')
+    plt.tight_layout()
+    plt.show()
