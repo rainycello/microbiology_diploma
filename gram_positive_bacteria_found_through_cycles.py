@@ -1,119 +1,121 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
-import matplotlib.lines as mlines
 from adjustText import adjust_text
-import re
 from collections import Counter
 
 # === Load data ===
 file_path = 'Wyniki_powietrze-3.xlsx'
 sheet_name = 'Powietrze zewnątrz-G(+)'
 df = pd.read_excel(file_path, sheet_name=sheet_name)
-
-# === Clean and prepare ===
 df.columns = df.columns.str.strip()
-df['Pobór'] = df['Pobór'].astype(str)
 
-# Map Roman numerals to numeric for sorting
-roman_map = {'I':1, 'II':2, 'III':3, 'IV':4, 'V':5, 'VI':6, 'VII':7, 'VIII':8,
-             'IX':9, 'X':10, 'XI':11, 'XII':12, 'XIII':13, 'XIV':14, 'XV':15}
-df['Pobór_num'] = df['Pobór'].map(roman_map)
-df = df[df['Pobór_num'].notna()]
-df = df.sort_values('Pobór_num')
-cycles_sorted = sorted(df['Pobór'].unique(), key=lambda x: roman_map.get(x, 0))
-df['Pobór'] = pd.Categorical(df['Pobór'], categories=cycles_sorted, ordered=True)
+# === Define proper Roman cycle order ===
+roman_order = ['V', 'VI', 'VII', 'VIII', 'IX', 'X']
+df = df[df['Pobór'].isin(roman_order)]
+df['Pobór'] = pd.Categorical(df['Pobór'], categories=roman_order, ordered=True)
+df = df.sort_values('Pobór')
 
-# === Define bacteria groups ===
+# === Prepare keywords ===
 specific_bacteria = {
     'Enterococcus': ['Enterococcus'],
     'B. anthracis': ['anthracis'],
     'B. cereus': ['cereus'],
     'B. thuringiensis': ['thuringiensis'],
     'B. mycoides': ['mycoides'],
-    'B. cereus group': ['wiedmannii', 'bombysepticus', 'cytotoxicus', 'bingmayongensis', 'pseudomycoides'],
-    'nuc': ['nuc'],
-    'mecA': ['mecA']
+    'B. cereus group': ['wiedmannii', 'bombysepticus', 'cytotoxicus', 'mobilis',
+                        'toyonensis', 'bingmayongensis', 'clarus', 'luti', 'tropicus', 'pseudomycoides'],
+    'nuc': [],
+    'mecA': []
 }
 
-# === Build results ===
+# === Clean and standardize ===
+df = df[df['Rodzaj/gatunek'].notna() | df['mecA'].notna() | df['nuc'].notna()]
+df['Pobór'] = df['Pobór'].astype(str)
+cycles = roman_order
+
+# === Collect results ===
 results = []
+
 for label, keywords in specific_bacteria.items():
-    for cycle in cycles_sorted:
+    for cycle in cycles:
         df_cycle = df[df['Pobór'] == cycle]
 
         if label in ['mecA', 'nuc']:
             found = df_cycle[df_cycle[label].astype(str).str.contains(label, case=False, na=False)]
         elif label == 'B. cereus group':
+            # Exclude specific named Bacillus first
             group_exclusive = set(keywords) - set(
-                specific_bacteria['B. anthracis'] + specific_bacteria['B. cereus'] +
-                specific_bacteria['B. thuringiensis'] + specific_bacteria['B. mycoides']
+                specific_bacteria['B. anthracis'] +
+                specific_bacteria['B. cereus'] +
+                specific_bacteria['B. thuringiensis'] +
+                specific_bacteria['B. mycoides']
             )
             pattern = '|'.join(group_exclusive)
-            found = df_cycle[df_cycle['Rodzaj/gatunek'].astype(str).str.contains(pattern, case=False, na=False)]
+            found = df_cycle[df_cycle['Rodzaj/gatunek'].str.contains(pattern, case=False, na=False)]
         else:
             pattern = '|'.join(keywords)
-            found = df_cycle[df_cycle['Rodzaj/gatunek'].astype(str).str.contains(pattern, case=False, na=False)]
+            found = df_cycle[df_cycle['Rodzaj/gatunek'].str.contains(pattern, case=False, na=False)]
 
-        count = len(found)
+        desc_list = []
+        for _, row in found.iterrows():
+            desc = f"{label}: {row['Miejsce poboru']} / {row['Metoda identyfikacji']}"
+            if label == 'B. cereus group' or 'api' in str(row['Metoda identyfikacji']).lower():
+                species = str(row['Rodzaj/gatunek']).strip()
+                desc += f"\n↳ {species}"
+            if label in ['mecA', 'nuc'] and 'sekwencjon' in str(row['Metoda identyfikacji']).lower():
+                species = str(row['Rodzaj/gatunek']).strip()
+                desc += f"\n↳ {species}"
+            desc_list.append(desc)
 
-        if count > 0:
-            records = []
-            for _, row in found.iterrows():
-                kind = label
-                if label in ['mecA', 'nuc'] and pd.notna(row['Rodzaj/gatunek']):
-                    kind += f" / {row['Rodzaj/gatunek']}"
-                elif label == 'B. cereus group':
-                    kind += f" / {row['Rodzaj/gatunek']}"
-                elif 'Api' in str(row['Metoda identyfikacji']):
-                    kind += f" / {row['Rodzaj/gatunek']}"
-                record = f"{kind} / {row['Miejsce poboru']} / {row['Metoda identyfikacji']}"
-                records.append(record)
+        # === Group repeated records with xN ===
+        desc_counter = Counter(desc_list)
+        descriptions = []
+        for d, c in desc_counter.items():
+            if c > 1:
+                descriptions.append(f"{d} x{c}")
+            else:
+                descriptions.append(d)
 
-            counted = Counter(records)
-            label_texts = [f"{text} x{counted[text]}" if counted[text] > 1 else text for text in sorted(counted)]
-        else:
-            label_texts = ['']
+        if not descriptions:
+            descriptions = [""]
 
         results.append({
             'Bacteria': label,
             'Cycle': cycle,
-            'Count': count,
-            'Labels': label_texts
+            'Count': len(desc_list),
+            'Descriptions': descriptions
         })
 
-plot_df = pd.DataFrame(results)
+# === Create DataFrame from results ===
+all_df = pd.DataFrame(results)
 
-# === Plot each bacteria group ===
-groups = {
-    'Enterococcus': ['Enterococcus'],
-    'Bacillus': ['B. anthracis', 'B. cereus', 'B. thuringiensis', 'B. mycoides', 'B. cereus group'],
-    'nuc & mecA': ['nuc', 'mecA']
-}
+# === Plotting Function ===
+def plot_dotplot(category_labels, title):
+    plot_df = all_df[all_df['Bacteria'].isin(category_labels)].copy()
 
-for group_name, group_labels in groups.items():
-    subset = plot_df[plot_df['Bacteria'].isin(group_labels)]
-
-    fig, ax = plt.subplots(figsize=(14, 6))
-
+    fig, ax = plt.subplots(figsize=(12, 6))
     texts = []
-    for label in group_labels:
-        label_df = subset[subset['Bacteria'] == label]
-        x = label_df['Cycle']
-        y = label_df['Count']
-        ax.plot(x, y, marker='o', label=label)
 
-        for i, row in label_df.iterrows():
-            for idx, label_text in enumerate(row['Labels']):
-                if label_text.strip():
-                    # offset labels vertically to reduce overlapping
-                    texts.append(ax.text(row['Cycle'], row['Count'] + 0.1 + idx * 0.1, label_text, fontsize=7))
+    for label in category_labels:
+        sub = plot_df[plot_df['Bacteria'] == label]
+        x = sub['Cycle']
+        y = sub['Count']
+        ax.plot(x, y, '-o', label=label)
 
-    adjust_text(texts, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5), force_text=1.2, force_points=0.3, expand_text=(1.2, 1.5), expand_points=(1.5, 2))
-    ax.set_title(f"{group_name} across cycles")
-    ax.set_xlabel("Cycle")
-    ax.set_ylabel("Isolate Count")
+        for xi, yi, descriptions in zip(x, y, sub['Descriptions']):
+            for i, desc in enumerate(descriptions):
+                texts.append(ax.text(xi, yi + 0.15 + i * 0.15, desc, fontsize=8, ha='center', va='bottom'))
+
+    adjust_text(texts, ax=ax, arrowprops=dict(arrowstyle='-', lw=0.5))
+    ax.set_title(title)
+    ax.set_xlabel('Cycle')
+    ax.set_ylabel('Count')
     ax.legend()
-    plt.xticks(rotation=45)
+    plt.grid(True)
     plt.tight_layout()
     plt.show()
+
+# === Plot each category ===
+plot_dotplot(['Enterococcus'], "Enterococcus occurrences by cycle")
+plot_dotplot(['B. anthracis', 'B. cereus', 'B. thuringiensis', 'B. mycoides', 'B. cereus group'], "Bacillus group occurrences by cycle")
+plot_dotplot(['mecA', 'nuc'], "mecA and nuc marker occurrences by cycle")
