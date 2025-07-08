@@ -15,6 +15,18 @@ df = df[df['Pobór'].isin(roman_order)]
 df['Pobór'] = pd.Categorical(df['Pobór'], categories=roman_order, ordered=True)
 df = df.sort_values('Pobór')
 
+# === Clean and normalize problematic text in 'Rodzaj/gatunek' ===
+df['Rodzaj/gatunek'] = (
+    df['Rodzaj/gatunek']
+    .astype(str)
+    .str.strip()
+    .str.replace('\u00a0', ' ', regex=False)  # non-breaking space
+    .str.replace('\n', ' ', regex=False)
+    .str.replace('\r', ' ', regex=False)
+    .str.replace('\t', ' ', regex=False)
+    .str.replace(' +', ' ', regex=True)
+)
+
 # === Prepare keywords ===
 specific_bacteria = {
     'Enterococcus': ['Enterococcus'],
@@ -28,7 +40,7 @@ specific_bacteria = {
     'mecA': []
 }
 
-# === Clean and standardize ===
+# === Filter non-empty records ===
 df = df[df['Rodzaj/gatunek'].notna() | df['mecA'].notna() | df['nuc'].notna()]
 df['Pobór'] = df['Pobór'].astype(str)
 cycles = roman_order
@@ -42,8 +54,8 @@ for label, keywords in specific_bacteria.items():
 
         if label in ['mecA', 'nuc']:
             found = df_cycle[df_cycle[label].astype(str).str.contains(label, case=False, na=False)]
+
         elif label == 'B. cereus group':
-            # Exclude specific named Bacillus first
             group_exclusive = set(keywords) - set(
                 specific_bacteria['B. anthracis'] +
                 specific_bacteria['B. cereus'] +
@@ -51,10 +63,19 @@ for label, keywords in specific_bacteria.items():
                 specific_bacteria['B. mycoides']
             )
             pattern = '|'.join(group_exclusive)
-            found = df_cycle[df_cycle['Rodzaj/gatunek'].str.contains(pattern, case=False, na=False)]
+            found = df_cycle[
+                df_cycle['Rodzaj/gatunek']
+                .str.lower()
+                .str.contains(pattern.lower(), na=False)
+            ]
+
         else:
             pattern = '|'.join(keywords)
-            found = df_cycle[df_cycle['Rodzaj/gatunek'].str.contains(pattern, case=False, na=False)]
+            found = df_cycle[
+                df_cycle['Rodzaj/gatunek']
+                .str.lower()
+                .str.contains(pattern.lower(), na=False)
+            ]
 
         desc_list = []
         for _, row in found.iterrows():
@@ -67,14 +88,9 @@ for label, keywords in specific_bacteria.items():
                 desc += f"\n↳ {species}"
             desc_list.append(desc)
 
-        # === Group repeated records with xN ===
+        # Group repeated records with xN
         desc_counter = Counter(desc_list)
-        descriptions = []
-        for d, c in desc_counter.items():
-            if c > 1:
-                descriptions.append(f"{d} x{c}")
-            else:
-                descriptions.append(d)
+        descriptions = [f"{d} x{c}" if c > 1 else d for d, c in desc_counter.items()]
 
         if not descriptions:
             descriptions = [""]
@@ -103,15 +119,16 @@ def plot_dotplot(category_labels, title):
         ax.plot(x, y, '-o', label=label)
 
         for xi, yi, descriptions in zip(x, y, sub['Descriptions']):
-            for i, desc in enumerate(descriptions):
-                texts.append(ax.text(xi, yi + 0.15 + i * 0.15, desc, fontsize=8, ha='center', va='bottom'))
+            # Scal opis w jeden tekst z łamaniem linii
+            full_desc = '\n'.join(descriptions)
+            texts.append(ax.text(xi, yi + 0.15, full_desc, fontsize=8, ha='center', va='bottom', multialignment='center'))
 
     adjust_text(texts, ax=ax, arrowprops=dict(arrowstyle='-', lw=0.5))
     ax.set_title(title)
     ax.set_xlabel('Cycle')
     ax.set_ylabel('Count')
     ax.legend()
-    plt.grid(True)
+    ax.grid(True)
     plt.tight_layout()
     plt.show()
 
