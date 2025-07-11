@@ -15,11 +15,15 @@ df.columns = df.columns.str.strip()
 
 # === Zmienne wejściowe i docelowe ===
 weather_cols = [
-    'PM10 dzien poboru (ug/m3)',	'PM 2.5 (ug/m3)',	'PM 1 tylko nasz aparat(ug/m3)',	'NO2 (ug/m3)',	'NO (ug/m3)',	'tlenki azotu (ug/m3)',	'SO2 (ug/m3)',	'CO (mg/m3)',	'benzen (ug/m3)', 'ozon (ug/m3)'
+    'PM10 dzien poboru (ug/m3)', 'PM 2.5 (ug/m3)', 'PM 1 tylko nasz aparat(ug/m3)', 'NO2 (ug/m3)', 'NO (ug/m3)',
+    'tlenki azotu (ug/m3)', 'SO2 (ug/m3)', 'CO (mg/m3)', 'benzen (ug/m3)', 'ozon (ug/m3)'
 ]
 
 bacteria_cols = [
-    'Ogólna Liczba drobnoustrojów/m3',	'Liczba bakterii opornych na streptomycynę', 'Częstość sterptomycynoopornych',	'Liczba szczepów z int I1/m3',	'Częstość intI+',	'Liczba Campylobacter',	'Liczba Listeria sp/m3',	'Liczba L. monocytogenes/m3',	'Liczba ESBL - na podstawie antybiogramów',	'Liczba CRE - na podstawie antybiogramów',	'Liczba mec+',	'Częstość mec+',	'Liczba VRE'
+    'Ogólna Liczba drobnoustrojów/m3', 'Liczba bakterii opornych na streptomycynę', 'Częstość sterptomycynoopornych',
+    'Liczba szczepów z int I1/m3', 'Częstość intI+', 'Liczba Campylobacter', 'Liczba Listeria sp/m3',
+    'Liczba L. monocytogenes/m3', 'Liczba ESBL - na podstawie antybiogramów', 'Liczba CRE - na podstawie antybiogramów',
+    'Liczba mec+', 'Częstość mec+', 'Liczba VRE'
 ]
 
 df = df[weather_cols + bacteria_cols].dropna()
@@ -66,7 +70,7 @@ df_nb = compute_glm(df, weather_cols, bacteria_cols, NegativeBinomial, method_na
 # === Łączenie wyników ===
 all_corrs = pd.concat([df_spearman, df_pearson, df_kendall, df_poisson, df_nb], ignore_index=True)
 
-
+# === Dodanie oznaczeń istotności (dla tabeli) ===
 def significance_stars(p):
     if p < 0.001:
         return '***'
@@ -77,46 +81,41 @@ def significance_stars(p):
     else:
         return ''
 
+summary_table = all_corrs.copy()
+summary_table['significance'] = summary_table['p'].apply(significance_stars)
+summary_table = summary_table.sort_values(by=['method', 'y', 'x'])
 
+# === Zapis do pliku Excel ===
+summary_table.to_excel('wyniki_korelacji_i_regresji.xlsx', index=False)
+
+# === Czyste wykresy (bez żadnych etykiet) ===
 def plot_method(df_method, title):
+    method_name = df_method['method'].iloc[0] if not df_method.empty else ""
+
     plt.figure(figsize=(14, 8))
     plot_data = df_method.copy()
-    plot_data['direction'] = np.where(plot_data['coef'] >= 0, 'Pozytywna', 'Ujemna')
-    plot_data.sort_values('coef', inplace=True)
+    plot_data = plot_data.dropna(subset=['coef', 'p'])
 
-    plot_data['coef_pct'] = (plot_data['coef'] * 100).round(2)
-    plot_data['stars'] = plot_data['p'].apply(significance_stars)
-    plot_data['label'] = plot_data['coef_pct'].astype(str) + '%' + plot_data['stars']
+    # Filtrowanie dla korelacji słabych
+    if method_name in ['pearson', 'kendall']:
+        plot_data = plot_data[(plot_data['coef'] <= -0.1) | (plot_data['coef'] >= 0.1)]
+
+    plot_data.sort_values('coef', inplace=True)
 
     ax = sns.barplot(
         data=plot_data, x='coef', y='y', hue='x',
         dodge=False, palette='RdYlGn'
     )
+
     plt.axvline(0, color='black', linestyle='--', linewidth=1)
     plt.title(title, fontsize=16)
     plt.xlabel('Współczynnik korelacji/regresji')
     plt.ylabel('Wskaźnik bakteryjny')
     plt.legend(title='Czynnik pogodowy', bbox_to_anchor=(1.05, 1), loc='upper left')
-
-    # Dodajemy teksty (procenty + gwiazdki) z adjust_text
-    texts = []
-    for i, bar in enumerate(ax.patches):
-        width = bar.get_width()
-        y_pos = bar.get_y() + bar.get_height() / 2
-        label = plot_data.iloc[i]['label']
-        if width < 0:
-            text = ax.text(width - 0.05, y_pos, label, va='center', ha='right', fontsize=9, color='black')
-        else:
-            text = ax.text(width + 0.02, y_pos, label, va='center', ha='left', fontsize=9, color='black')
-        texts.append(text)
-
-    adjust_text(texts, ax=ax, arrowprops=dict(arrowstyle='-', color='gray', lw=0.5))
-
     plt.tight_layout()
     plt.show()
 
-
-# === Wykresy dla każdej metody ===
+# === Wykresy ===
 for method_name in ['spearman', 'pearson', 'kendall', 'poisson', 'neg_binomial']:
     df_plot = all_corrs[all_corrs['method'] == method_name]
     plot_method(df_plot, f"{method_name.upper()} — Korelacja/regresja pogoda vs bakterie")
